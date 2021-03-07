@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <ctype.h>
 
-#include "trapper.h"
+#include "inspector.h"
 
 static void show_differences(mcontext_t* before, mcontext_t* after)
 {
@@ -84,10 +84,10 @@ int main(int argc, char **argv)
 	unsigned char code[15];
 	int data_size = hex_to_bin(argv[1], code, sizeof(code));
 
-	init_trap();
+	inspector_init();
 
 	mcontext_t before, after;
-	int len = inspect_instruction(code, sizeof(code), &before, &after);
+	int len = inspector_inspect(code, sizeof(code), &before, &after);
 	if (len == -1)
 	{
 		fprintf(stderr, "Failed to inspect code\n");

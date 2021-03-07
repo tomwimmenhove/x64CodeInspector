@@ -6,9 +6,17 @@
 #include <setjmp.h>
 #include <string.h>
 
-#include "trapper.h"
+#include "inspector.h"
 
-static void run_code_at(void *address) { ((void (*)()) address)(); }
+/* I don't think there's a way to avoid globals, since signal handlers
+ * don't have any non-gblobal context by definition */
+static __thread char* trap_address;
+static __thread int trap_state;
+static __thread char original_opcode;
+static __thread jmp_buf trap_jmp_buf;
+static __thread mcontext_t* trap_context_before;
+static __thread mcontext_t* trap_context_after;
+static __thread int trap_failed = 0;
 
 enum
 {
@@ -16,13 +24,7 @@ enum
 	TRAP_STATE_TRAP,
 };
 
-static char* trap_address;
-static int trap_state;
-static char original_opcode;
-static jmp_buf trap_jmp_buf;
-static mcontext_t* trap_context_before;
-static mcontext_t* trap_context_after;
-static int trap_failed = 0;
+static void run_code_at(void *address) { ((void (*)()) address)(); }
 
 static int trap_code_at(void *address, mcontext_t* context_before, mcontext_t* context_after)
 {
@@ -95,7 +97,7 @@ static void trap_handler(int signum, siginfo_t* siginfo, void* context)
 	}
 }
 
-void init_trap()
+void inspector_init()
 {
 	struct sigaction action_handler;
 	action_handler.sa_flags = SA_SIGINFO;
@@ -104,7 +106,7 @@ void init_trap()
 	sigaction(SIGSEGV, &action_handler, NULL);
 }
 
-int inspect_instruction(char* code, int code_len, mcontext_t* context_before, mcontext_t* context_after)
+int inspector_inspect(char* code, int code_len, mcontext_t* context_before, mcontext_t* context_after)
 {
 	int page_size = getpagesize();
 
