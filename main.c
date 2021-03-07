@@ -85,6 +85,12 @@ static int hex_to_bin(char* hex, unsigned char* data, int maxlen)
 		}
 	}
 
+	if (nibpos != 0)
+	{
+		fprintf(stderr, "Hex string has an odd number of nibbles\n");
+		return -1;
+	}
+
 	return len;
 }
 
