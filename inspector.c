@@ -25,87 +25,105 @@
 
 #include "inspector.h"
 
-/* I don't think there's a way to avoid globals, since signal handlers
- * don't have any non-gblobal context by definition */
-static __thread char* trap_address;
-static __thread int trap_state;
-static __thread char original_opcode;
-static __thread jmp_buf trap_jmp_buf;
-static __thread mcontext_t* trap_context_before;
-static __thread mcontext_t* trap_context_after;
-static __thread int trap_failed = 0;
-
 enum
 {
+	/* Initial state. Used to save the 'before' processor state
+	 * and to set the trap flag. */
 	TRAP_STATE_INT3,
+
+	/* State we're in after the instruction in question has been
+	 * executed, so we can save the 'after' processor state. */
 	TRAP_STATE_TRAP,
 };
+
+struct inspector_state
+{
+	char*		address;		// Address of the code to be executed
+	int		state;			// State in the trap handler
+	char		original_opcode;	// Original first byte of the code
+	jmp_buf		saved_state;		// Saved state before execution
+	mcontext_t*	context_before;		// Processor state before execution
+	mcontext_t*	context_after;		// Processor state after execution
+	int		failed;			// Execution failed (SIGSEGV)
+};
+
+/* I don't think there's a way to avoid globals, since signal handlers
+ * don't have any non-gblobal context by definition */
+static __thread struct inspector_state inspector_ctx;
 
 static void run_code_at(void *address) { ((void (*)()) address)(); }
 
 static int trap_code_at(void *address, mcontext_t* context_before, mcontext_t* context_after)
 {
-	trap_context_before = context_before;
-	trap_context_after = context_after;
-	trap_failed = 0;
+	/* Initialize global context */
+	inspector_ctx.failed		= 0;
+	inspector_ctx.state		= TRAP_STATE_INT3;
+	inspector_ctx.context_before	= context_before;
+	inspector_ctx.context_after	= context_after;
+	inspector_ctx.address		= (char*) address;
+	inspector_ctx.original_opcode	= *inspector_ctx.address;
+	
+	/* Replace the first byte of the code with 0xcc (INT3 opcode), forcing the
+	 * trap handler to be called when the code is executed */
+	*inspector_ctx.address = 0xcc;
 
-	if (sigsetjmp(trap_jmp_buf, 1) == 0)
+	if (sigsetjmp(inspector_ctx.saved_state, 1) == 0)
 	{
-		trap_address = (char*) address;
-
-		original_opcode = *trap_address;
-		*trap_address = 0xcc; // INT3 opcode
-
-		trap_state = TRAP_STATE_INT3;
-
 		run_code_at(address);
 	}
 
-	return trap_failed;
+	return inspector_ctx.failed;
 }
 
-static void trap_handler(int signum, siginfo_t* siginfo, void* context)
+static void trap_handler(int signum, siginfo_t* siginfo, void* data)
 {
-	ucontext_t* ctx = (ucontext_t*) context;
+	ucontext_t* trap_ctx = (ucontext_t*) data;
 
+//	printf("Signal %d @0x%016lx\n", signum, (uint64_t) ctx->uc_mcontext.gregs[REG_RIP]);
+
+	/* SIGSEGV causes trap_code_at() to return an error */
 	if (signum == SIGSEGV)
 	{
-		ctx->uc_mcontext.gregs[REG_EFL] &= ~0x100;
-		trap_failed = 1;
-		siglongjmp(trap_jmp_buf, 1);
+		/* Reset the trap flag */
+		trap_ctx->uc_mcontext.gregs[REG_EFL] &= ~0x100;
+
+		/* Set the return value for trap_code_at() */
+		inspector_ctx.failed = -1;
+
+		/* Restore state and make sigsetjmp() in trap_code_at() return non-zero */
+		siglongjmp(inspector_ctx.saved_state, 1);
 
 		return;
 	}
 
-//	printf("Trapped @0x%016lx\n", (uint64_t) ctx->uc_mcontext.gregs[REG_RIP]);
-
-	switch(trap_state)
+	switch(inspector_ctx.state)
 	{
 		case TRAP_STATE_INT3:
 			/* Execute the same instruction again */
-			ctx->uc_mcontext.gregs[REG_RIP]--;
+			trap_ctx->uc_mcontext.gregs[REG_RIP]--;
 
 			/* Save the 'before' state */
-			memcpy(trap_context_before, &ctx->uc_mcontext, sizeof(mcontext_t));
+			memcpy(inspector_ctx.context_before, &trap_ctx->uc_mcontext, sizeof(mcontext_t));
 
 			/* Set the trap flag */
-			ctx->uc_mcontext.gregs[REG_EFL] |= 0x100;
+			trap_ctx->uc_mcontext.gregs[REG_EFL] |= 0x100;
 
 			/* Restore the original opcode */
-			*trap_address = original_opcode;
+			*inspector_ctx.address = inspector_ctx.original_opcode;
 
-			trap_state = TRAP_STATE_TRAP;
+			/* After execution, fall into the next state */
+			inspector_ctx.state = TRAP_STATE_TRAP;
 
 			break;
 		case TRAP_STATE_TRAP:
-			/* unset the trap flag */
-			ctx->uc_mcontext.gregs[REG_EFL] &= ~0x100;
+			/* Reset the trap flag */
+			trap_ctx->uc_mcontext.gregs[REG_EFL] &= ~0x100;
 
 			/* Save the 'after' state */
-			memcpy(trap_context_after, &ctx->uc_mcontext, sizeof(mcontext_t));
+			memcpy(inspector_ctx.context_after, &trap_ctx->uc_mcontext, sizeof(mcontext_t));
 
-			/* Pretend nothing hacodeened */
-			siglongjmp(trap_jmp_buf, 1);
+			/* Restore state and make sigsetjmp() in trap_code_at() return non-zero */
+			siglongjmp(inspector_ctx.saved_state, 1);
 
 			break;
 		default:
