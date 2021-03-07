@@ -122,6 +122,12 @@ int main(int argc, char **argv)
 	}
 
 	printf("Instructrion size: %d\n", len);
+	printf("Full instruction (hex): ");
+	for(int i = 0; i < len; i++)
+	{
+		printf("%02x ", code[i]);
+	}
+	printf("\n");
 	show_differences(&before, &after);
 
 	return 0;
