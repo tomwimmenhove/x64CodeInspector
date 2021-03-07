@@ -83,6 +83,10 @@ int main(int argc, char **argv)
 	/* Read the data as a hex string */
 	unsigned char code[15];
 	int data_size = hex_to_bin(argv[1], code, sizeof(code));
+	if (data_size == -1)
+	{
+		return 1;
+	}
 
 	inspector_init();
 
